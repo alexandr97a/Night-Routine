@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
-import OpenAI from "openai";
 
 /* ================== Config ================== */
 const MAX_LENGTH = 400;
@@ -54,11 +53,6 @@ function buildPrompt(q1: string, q2: string) {
 `.trim();
 }
 
-/* ================== OpenAI ================== */
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 /* ================== Route ================== */
 export async function POST(req: Request) {
   try {
@@ -72,7 +66,7 @@ export async function POST(req: Request) {
     }
 
     // ✅ Supabase server client (cookies 기반)
-    const cookieStore = await cookies();
+    const cookieStore = await cookies()// Next 15/16에서 cookies()는 await 불필요
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -115,23 +109,32 @@ export async function POST(req: Request) {
       );
     }
 
-    // ✅ OpenAI 호출(실패 시 fallback)
+    // ✅ OpenAI 호출(빌드 안전: POST 내부에서만 import/생성)
     let feedback =
-      "오늘을 돌아보려는 마음만으로도 충분해요. 내일은 조금 더 가볍게 시작할 수 있을 거예요.";
+      "오늘을 정리하는 데 필요한 정보가 잠깐 비었습니다. 내일 다시 이어가도 괜찮습니다.";
 
-    try {
-      const prompt = buildPrompt(q1, q2);
+    const apiKey = process.env.OPENAI_API_KEY;
 
-      const resp = await openai.responses.create({
-        model: MODEL,
-        input: prompt,
-      });
+    if (apiKey) {
+      try {
+        const OpenAI = (await import("openai")).default;
+        const openai = new OpenAI({ apiKey });
 
-      // ✅ TS 안전: output_text만 사용
-      const text = (resp.output_text ?? "").trim();
-      if (text) feedback = text;
-    } catch (e) {
-      console.error("OpenAI error:", e);
+        const prompt = buildPrompt(q1, q2);
+
+        const resp = await openai.responses.create({
+          model: MODEL,
+          input: prompt,
+        });
+
+        const text = (resp.output_text ?? "").trim();
+        if (text) feedback = text;
+      } catch (e) {
+        console.error("OpenAI error:", e);
+      }
+    } else {
+      // 키가 없으면 빌드/런타임 모두 안전하게 fallback
+      console.warn("OPENAI_API_KEY missing: using fallback feedback");
     }
 
     // ✅ 저장 (DB 유니크가 최종 방어선)
@@ -149,7 +152,7 @@ export async function POST(req: Request) {
 
     if (insErr) {
       const msg = String(insErr.message || "");
-      if (msg.toLowerCase().includes("duplicate") || msg.includes("unique")) {
+      if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) {
         const { data: ex2 } = await supabase
           .from("entries")
           .select("id")
